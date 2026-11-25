@@ -37,6 +37,12 @@ It does not mean any of the following:
 - **The code has not been audited.** Nothing here should be used to hold real
   value yet.
 
+## Based on Bitcoin Core
+
+The code is a fork of [Bitcoin Core](https://github.com/bitcoin/bitcoin)
+release v32.1, with its full history. Build instructions are in the `doc`
+folder (`doc/build-unix.md`, `doc/build-osx.md`, `doc/build-windows.md`).
+
 ## Licence
 
-MIT, the same as Bitcoin Core.
+MIT, the same as Bitcoin Core. See [COPYING](COPYING).

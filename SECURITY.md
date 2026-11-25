@@ -1,20 +1,13 @@
 # Security Policy
 
-## Supported Versions
+This is an experimental fork of Bitcoin Core. It has not been audited and must
+not be used to hold real value.
 
-See our website for versions of Bitcoin Core that are currently supported with
-security updates: https://bitcoincore.org/en/lifecycle/#schedule
+## Reporting a problem
 
-## Reporting a Vulnerability
+There is no live network yet, so problems in this fork can be reported by
+opening an issue in this repository.
 
-To report security issues send an email to security@bitcoincore.org (not for support).
-
-The following keys may be used to communicate sensitive information to developers:
-
-| Name | Fingerprint |
-|------|-------------|
-| Michael Ford | E777 299F C265 DD04 7930  70EB 944D 35F9 AC3D B76A |
-| Ava Chow | 1528 1230 0785 C964 44D3  334D 1756 5732 E08E 5E41 |
-| Niklas Gögge | 2CBB F208 E594 BF43 9B5F 276C 7465 CFFF 6793 242E |
-
-You can import a key by running the following command with that individual’s fingerprint: `gpg --keyserver hkps://keys.openpgp.org --recv-keys "<fingerprint>"` Ensure that you put quotes around fingerprints containing spaces.
+Do not report problems in this fork to the Bitcoin Core project. If you find a
+problem that also affects Bitcoin Core itself, do not post it publicly: follow
+Bitcoin Core's own policy at https://bitcoincore.org/en/contact/.
