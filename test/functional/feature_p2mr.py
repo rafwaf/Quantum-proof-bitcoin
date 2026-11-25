@@ -32,8 +32,14 @@ from test_framework.messages import (
     CTxIn,
     CTxInWitness,
     CTxOut,
-    ser_compact_size,
     sha256,
+)
+from test_framework.psbt import (
+    PSBT,
+    PSBTMap,
+    PSBT_GLOBAL_UNSIGNED_TX,
+    PSBT_IN_FINAL_SCRIPTWITNESS,
+    PSBT_IN_WITNESS_UTXO,
 )
 from test_framework.script import (
     ANNEX_TAG,
@@ -41,6 +47,8 @@ from test_framework.script import (
     LEAF_VERSION_TAPSCRIPT,
     OP_1,
     OP_2,
+    OP_2DROP,
+    OP_BOOLAND,
     OP_CHECKSIG,
     OP_CHECKSIGADD,
     OP_CHECKSIGVERIFY,
@@ -48,15 +56,21 @@ from test_framework.script import (
     OP_DUP,
     OP_NUMEQUAL,
     OP_SHA256,
+    OP_SWAP,
     SIGHASH_ALL,
     SIGHASH_ANYONECANPAY,
     SIGHASH_DEFAULT,
     SIGHASH_SINGLE,
+    SLHDSA_PUBKEY_TYPE,
     SLHDSA_SIGNATURE_SIZE,
     TaprootSignatureHash,
     p2mr_construct,
     slhdsa_script_pubkey,
     taproot_construct,
+)
+from test_framework.script_util import (
+    script_to_p2sh_script,
+    script_to_p2wsh_script,
 )
 from test_framework.segwit_addr import encode_segwit_address
 from test_framework.test_framework import BitcoinTestFramework
@@ -66,10 +80,6 @@ from test_framework.wallet import MiniWallet
 ACTIVATION_HEIGHT = COINBASE_MATURITY + 50
 AMOUNT = 100_000  # value of each output under test, in satoshi
 FEE = 10_000
-
-# Validation weight an SLH-DSA signature check costs, and the budget every script starts with.
-VALIDATION_WEIGHT_PER_SLHDSA_SIGOP_PASSED = 1000
-VALIDATION_WEIGHT_OFFSET = 50
 
 # Script errors, as they appear in reject reasons.
 ERR_SLHDSA_SIG = "Invalid SLH-DSA signature)"
@@ -88,6 +98,7 @@ ERR_UPGRADABLE_LEAF_VERSION = "Taproot version reserved for soft-fork upgrades"
 ERR_UPGRADABLE_PUBKEYTYPE = "Public key version reserved for soft-fork upgrades"
 ERR_OP_SUCCESS = "OP_SUCCESSx reserved for soft-fork upgrades"
 ERR_WITNESS_NONSTANDARD = "bad-witness-nonstandard"
+ERR_NONSTANDARD_INPUTS = "bad-txns-nonstandard-inputs"
 
 
 def slhdsa_keygen(name):
@@ -101,11 +112,6 @@ def flip_bit(data, pos):
     damaged = bytearray(data)
     damaged[pos] ^= 1
     return bytes(damaged)
-
-
-def witness_stack_size(stack):
-    """Serialized size of a witness stack, which sets the validation weight budget."""
-    return len(ser_compact_size(len(stack))) + sum(len(ser_compact_size(len(item))) + len(item) for item in stack)
 
 
 class Utxo:
@@ -215,9 +221,12 @@ class P2MRTest(BitcoinTestFramework):
         self.test_slhdsa_signatures()
         self.test_sighash_types()
         self.test_multisig()
-        self.test_validation_weight()
+        self.test_moving_and_copying_signatures()
         self.test_element_size()
-        self.test_slhdsa_key_in_taproot()
+        self.test_other_key_types()
+        self.test_p2sh_wrapped()
+        self.test_mixed_inputs()
+        self.test_signing_rpcs()
 
     def test_rpc(self):
         self.log.info("P2MR outputs are recognized and have a witness v2 address")
@@ -240,15 +249,15 @@ class P2MRTest(BitcoinTestFramework):
         early, last_early, kept = self.fund([self.hybrid.scriptPubKey] * 3)
         leaf = self.hybrid.leaves["schnorr"]
 
-        # A spend that follows the P2MR rules is non-standard, like any spend of a future witness version.
+        # A spend that follows the P2MR rules is non-standard, like any spend of an undefined witness program.
         valid = self.create_spend([early])
         self.set_witness(valid, leaf, [sign_schnorr(self.schnorr_sec, self.sighash(valid, [early], leaf))])
-        self.check_mempool(valid, ERR_UPGRADABLE_WITNESS_PROGRAM)
+        self.check_mempool(valid, ERR_NONSTANDARD_INPUTS)
 
         # In a block, anyone can spend the output with any witness.
         garbage = self.create_spend([early])
         garbage.wit.vtxinwit[0].scriptWitness.stack = [b"\x01"]
-        self.check_mempool(garbage, ERR_WITNESS_NONSTANDARD)
+        self.check_mempool(garbage, ERR_NONSTANDARD_INPUTS)
         self.check_block([garbage])
 
         self.log.info("The rules start at the activation height, also for outputs created before it")
@@ -270,6 +279,33 @@ class P2MRTest(BitcoinTestFramework):
         self.check_mempool(valid)
         self.check_block([valid])
         assert_equal(self.node.getblockcount(), ACTIVATION_HEIGHT)
+
+        self.log.info("A reorganisation to before the activation height takes the rules away, and one back restores them")
+        last_inactive = self.node.getblockhash(ACTIVATION_HEIGHT - 1)
+        first_active = self.node.getblockhash(ACTIVATION_HEIGHT)
+        self.node.invalidateblock(last_inactive)
+        assert_equal(self.node.getblockcount(), ACTIVATION_HEIGHT - 2)
+        assert_equal(self.deployment()["active"], False)
+        # The spend that follows the P2MR rules returned to the mempool when its block was disconnected,
+        # while the rules still applied to the next block. It is valid with and without them. The
+        # spend with a meaningless witness, from the block before, did not return: it is not standard.
+        assert_equal(self.node.getrawmempool(), [valid.txid_hex])
+        # In a block, the output is anyone's to spend again.
+        garbage = self.create_spend([kept])
+        garbage.wit.vtxinwit[0].scriptWitness.stack = [b"\x01"]
+        self.check_block([garbage])
+        assert_equal(self.node.getblockcount(), ACTIVATION_HEIGHT - 1)
+        assert_equal(self.deployment()["active"], True)
+        assert_equal(self.node.getrawmempool(), [])
+        # The original chain has more work. Going back to it brings back its blocks, and the rules with them.
+        self.node.reconsiderblock(last_inactive)
+        assert_equal(self.node.getbestblockhash(), first_active)
+        assert_equal(self.node.getrawmempool(), [])
+        # Its first block with the rules active spent the output that the other chain gave away.
+        garbage = self.create_spend([kept])
+        garbage.vout[0].nValue -= 1  # so that it is not the transaction that spent the output
+        garbage.wit.vtxinwit[0].scriptWitness.stack = [b"\x01"]
+        self.check_block([garbage], "bad-txns-inputs-missingorspent")
 
     def test_structure(self):
         self.log.info("A P2MR spend must reveal a script and its Merkle path")
@@ -485,48 +521,35 @@ class P2MRTest(BitcoinTestFramework):
         self.set_witness(tx, leaf, [sign_schnorr(self.schnorr_sec, msg), slhdsa.sign(msg, self.slh_sk2), b""])
         self.check_block([tx])
 
-    def test_validation_weight(self):
-        self.log.info("Each SLH-DSA signature check is charged against the validation weight budget")
+    def test_moving_and_copying_signatures(self):
+        self.log.info("A script can move an SLH-DSA signature, but cannot copy it to check it twice")
         pubkey = slhdsa_script_pubkey(self.slh_pk1)
+        twice = CScript([OP_DUP, pubkey, OP_CHECKSIGVERIFY, pubkey, OP_CHECKSIG])
+        # The SLH-DSA signature lies below the result of the first check, and is swapped to the top.
+        moved = CScript([self.schnorr_pub, OP_CHECKSIG, OP_SWAP, pubkey, OP_CHECKSIG, OP_BOOLAND])
+        tree = p2mr_construct([("twice", twice), ("moved", moved)])
+        utxo_twice, utxo_moved = self.fund([tree.scriptPubKey] * 2)
 
-        def repeated_checks(count):
-            """A script that checks one signature count times, and its output."""
-            script = CScript([OP_DUP, pubkey, OP_CHECKSIGVERIFY] * (count - 1) + [pubkey, OP_CHECKSIG])
-            return p2mr_construct([("checks", script)])
+        tx = self.create_spend([utxo_twice])
+        leaf = tree.leaves["twice"]
+        self.set_witness(tx, leaf, [slhdsa.sign(self.sighash(tx, [utxo_twice], leaf), self.slh_sk1)])
+        self.check(tx, ERR_PUSH_SIZE)
 
-        def budget(count):
-            leaf = repeated_checks(count).leaves["checks"]
-            stack = [bytes(SLHDSA_SIGNATURE_SIZE), bytes(leaf.script), leaf.control_block]
-            return VALIDATION_WEIGHT_OFFSET + witness_stack_size(stack)
-
-        # The largest number of checks the budget of such a spend allows.
-        count = 1
-        while budget(count + 1) >= (count + 1) * VALIDATION_WEIGHT_PER_SLHDSA_SIGOP_PASSED:
-            count += 1
-        assert count > 1
-        self.log.debug(f"{count} checks fit in a budget of {budget(count)}, {count + 1} do not fit in {budget(count + 1)}")
-
-        within, beyond = repeated_checks(count), repeated_checks(count + 1)
-        utxo_within, utxo_beyond = self.fund([within.scriptPubKey, beyond.scriptPubKey])
-
-        tx = self.create_spend([utxo_beyond])
-        leaf = beyond.leaves["checks"]
-        self.set_witness(tx, leaf, [slhdsa.sign(self.sighash(tx, [utxo_beyond], leaf), self.slh_sk1)])
-        self.check(tx, ERR_VALIDATION_WEIGHT)
-
-        tx = self.create_spend([utxo_within])
-        leaf = within.leaves["checks"]
-        self.set_witness(tx, leaf, [slhdsa.sign(self.sighash(tx, [utxo_within], leaf), self.slh_sk1)])
+        tx = self.create_spend([utxo_moved])
+        leaf = tree.leaves["moved"]
+        msg = self.sighash(tx, [utxo_moved], leaf)
+        self.set_witness(tx, leaf, [slhdsa.sign(msg, self.slh_sk1), sign_schnorr(self.schnorr_sec, msg)])
         self.accept(tx)
 
     def test_element_size(self):
         self.log.info("Only P2MR witness stacks accept elements with the size of an SLH-DSA signature")
         drop = CScript([OP_DROP, OP_1])
         hash_and_drop = CScript([OP_SHA256, OP_DROP, OP_1])
-        tree = [("drop", drop), ("hash", hash_and_drop)]
+        copy_and_drop = CScript([OP_DUP, OP_2DROP, OP_1])
+        tree = [("drop", drop), [("hash", hash_and_drop), ("copy", copy_and_drop)]]
         p2mr = p2mr_construct(tree)
         p2tr = taproot_construct(self.schnorr_pub, tree)
-        utxo_p2mr, utxo_hash, utxo_p2tr = self.fund([p2mr.scriptPubKey, p2mr.scriptPubKey, p2tr.scriptPubKey])
+        utxo_p2mr, utxo_hash, utxo_copy, utxo_p2tr = self.fund([p2mr.scriptPubKey] * 3 + [p2tr.scriptPubKey])
 
         tx = self.create_spend([utxo_p2mr])
         leaf = p2mr.leaves["drop"]
@@ -546,14 +569,15 @@ class P2MRTest(BitcoinTestFramework):
         self.set_witness(tx, leaf, [bytes(SLHDSA_SIGNATURE_SIZE)])
         self.accept(tx)
 
-        # Except hashing it.
-        tx = self.create_spend([utxo_hash])
-        leaf = p2mr.leaves["hash"]
-        for size in (SLHDSA_SIGNATURE_SIZE, SLHDSA_SIGNATURE_SIZE + 1):
-            self.set_witness(tx, leaf, [bytes(size)])
-            self.check(tx, ERR_PUSH_SIZE)
-        self.set_witness(tx, leaf, [bytes(520)])
-        self.check_block([tx])
+        # Except hashing it or copying it.
+        for utxo, name in ((utxo_hash, "hash"), (utxo_copy, "copy")):
+            tx = self.create_spend([utxo])
+            leaf = p2mr.leaves[name]
+            for size in (SLHDSA_SIGNATURE_SIZE, SLHDSA_SIGNATURE_SIZE + 1):
+                self.set_witness(tx, leaf, [bytes(size)])
+                self.check(tx, ERR_PUSH_SIZE)
+            self.set_witness(tx, leaf, [bytes(520)])
+            self.check_block([tx])
 
         # A Taproot output does not accept such elements.
         tx = self.create_spend([utxo_p2tr])
@@ -565,7 +589,7 @@ class P2MRTest(BitcoinTestFramework):
         tx.wit.vtxinwit[0].scriptWitness.stack = [bytes(80), bytes(leaf.script), control_block]
         self.accept(tx)
 
-    def test_slhdsa_key_in_taproot(self):
+    def test_other_key_types(self):
         self.log.info("In a Taproot output an SLH-DSA key is an unknown key type, as in Bitcoin")
         p2tr = taproot_construct(self.schnorr_pub, [("slh", self.slh_script)])
         leaf = p2tr.leaves["slh"]
@@ -576,6 +600,87 @@ class P2MRTest(BitcoinTestFramework):
         tx.wit.vtxinwit[0].scriptWitness.stack = [b"\x01", bytes(leaf.script), control_block]
         self.check_mempool(tx, ERR_UPGRADABLE_PUBKEYTYPE)
         self.check_block([tx])
+
+        self.log.info("In a P2MR script, keys of other unknown types stay reserved for upgrades")
+        wrong_type = bytes([SLHDSA_PUBKEY_TYPE + 1]) + self.slh_pk1
+        too_long = slhdsa_script_pubkey(self.slh_pk1) + b"\x00"
+        tree = p2mr_construct([("wrong_type", CScript([wrong_type, OP_CHECKSIG])), ("too_long", CScript([too_long, OP_CHECKSIG]))])
+        for name in ("wrong_type", "too_long"):
+            utxo, = self.fund([tree.scriptPubKey])
+            tx = self.create_spend([utxo])
+            self.set_witness(tx, tree.leaves[name], [b"\x01"])
+            self.check_mempool(tx, ERR_UPGRADABLE_PUBKEYTYPE)
+            self.check_block([tx])
+
+    def test_p2sh_wrapped(self):
+        self.log.info("A witness v2 program inside P2SH is not a P2MR output")
+        redeem_script = self.hybrid.scriptPubKey
+        utxo, = self.fund([script_to_p2sh_script(redeem_script)])
+        tx = self.create_spend([utxo])
+        tx.vin[0].scriptSig = CScript([bytes(redeem_script)])
+        tx.wit.vtxinwit[0].scriptWitness.stack = [b"\x01"]
+        # It stays an undefined witness program: non-standard to spend, and anyone's in a block.
+        self.check_mempool(tx, ERR_UPGRADABLE_WITNESS_PROGRAM)
+        self.check_block([tx])
+
+    def test_mixed_inputs(self):
+        self.log.info("A transaction can spend P2MR outputs together with other outputs, in any order")
+        other_script = CScript([OP_1])
+        leaf = self.hybrid.leaves["schnorr"]
+        for p2mr_index in (0, 1):
+            p2mr_utxo, other_utxo = self.fund([self.hybrid.scriptPubKey, script_to_p2wsh_script(other_script)])
+            utxos = [p2mr_utxo, other_utxo] if p2mr_index == 0 else [other_utxo, p2mr_utxo]
+            tx = self.create_spend(utxos)
+            tx.wit.vtxinwit[1 - p2mr_index].scriptWitness.stack = [bytes(other_script)]
+            sig = sign_schnorr(self.schnorr_sec, self.sighash(tx, utxos, leaf, index=p2mr_index))
+            self.set_witness(tx, leaf, [flip_bit(sig, 0)], index=p2mr_index)
+            self.check(tx, ERR_SCHNORR_SIG)
+            self.set_witness(tx, leaf, [sig], index=p2mr_index)
+            self.accept(tx)
+
+    def test_signing_rpcs(self):
+        self.log.info("Signing a transaction keeps the witness of a P2MR input, and reports whether it is valid")
+        leaf = self.hybrid.leaves["slh"]
+        utxo, = self.fund([self.hybrid.scriptPubKey])
+        tx = self.create_spend([utxo])
+        sig = slhdsa.sign(self.sighash(tx, [utxo], leaf), self.slh_sk1)
+        self.set_witness(tx, leaf, [sig])
+        signed_hex = tx.serialize().hex()
+        res = self.node.signrawtransactionwithkey(signed_hex, [])
+        assert_equal(res["hex"], signed_hex)
+        assert_equal(res["complete"], True)
+        assert "errors" not in res
+
+        damaged = self.create_spend([utxo])
+        self.set_witness(damaged, leaf, [flip_bit(sig, 100)])
+        damaged_hex = damaged.serialize().hex()
+        res = self.node.signrawtransactionwithkey(damaged_hex, [])
+        assert_equal(res["hex"], damaged_hex)
+        assert_equal(res["complete"], False)
+        assert_equal(res["errors"][0]["error"], "Invalid SLH-DSA signature")
+
+        self.log.info("A PSBT with a finalized P2MR input is recognized as complete")
+        def psbt_of(spend):
+            unsigned = CTransaction(spend)
+            unsigned.wit.vtxinwit = []
+            return PSBT(
+                g=PSBTMap({PSBT_GLOBAL_UNSIGNED_TX: unsigned.serialize()}),
+                i=[PSBTMap({
+                    PSBT_IN_WITNESS_UTXO: utxo.output.serialize(),
+                    PSBT_IN_FINAL_SCRIPTWITNESS: spend.wit.vtxinwit[0].serialize(),
+                })],
+                o=[PSBTMap()],
+            ).to_base64()
+
+        res = self.node.finalizepsbt(psbt_of(tx))
+        assert_equal(res["complete"], True)
+        assert_equal(res["hex"], signed_hex)
+        analysis = self.node.analyzepsbt(psbt_of(tx))
+        assert_equal(analysis["inputs"][0]["is_final"], True)
+        assert_equal(analysis["next"], "extractor")
+        assert_equal(self.node.finalizepsbt(psbt_of(damaged))["complete"], False)
+
+        self.accept(tx)
 
 
 if __name__ == '__main__':

@@ -798,7 +798,10 @@ bool ProduceSignature(const SigningProvider& provider, const BaseSignatureCreato
         sigdata.scriptWitness.stack = result;
         sigdata.witness = true;
         result.clear();
-    } else if (whichType == TxoutType::WITNESS_V1_TAPROOT && !P2SH) {
+    } else if ((whichType == TxoutType::WITNESS_V1_TAPROOT || whichType == TxoutType::WITNESS_V2_P2MR) && !P2SH) {
+        // Keep the witness the input already has if no new one was produced.
+        // Signing for P2MR outputs is not implemented, so that is always the
+        // case for them.
         sigdata.witness = true;
         if (solved) {
             sigdata.scriptWitness.stack = std::move(result);

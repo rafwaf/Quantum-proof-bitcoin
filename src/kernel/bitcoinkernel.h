@@ -518,7 +518,7 @@ typedef struct {
 typedef uint8_t btck_ScriptVerifyStatus;
 #define btck_ScriptVerifyStatus_OK ((btck_ScriptVerifyStatus)(0))
 #define btck_ScriptVerifyStatus_ERROR_INVALID_FLAGS_COMBINATION ((btck_ScriptVerifyStatus)(1)) //!< The flags were combined in an invalid way.
-#define btck_ScriptVerifyStatus_ERROR_SPENT_OUTPUTS_REQUIRED ((btck_ScriptVerifyStatus)(2))    //!< The taproot flag was set, so valid spent_outputs have to be provided.
+#define btck_ScriptVerifyStatus_ERROR_SPENT_OUTPUTS_REQUIRED ((btck_ScriptVerifyStatus)(2))    //!< The taproot or P2MR flag was set, so valid spent_outputs have to be provided.
 
 /**
  * Script verification flags that may be composed with each other.
@@ -532,13 +532,15 @@ typedef uint32_t btck_ScriptVerificationFlags;
 #define btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY ((btck_ScriptVerificationFlags)(1U << 10)) //!< enable CHECKSEQUENCEVERIFY (BIP112)
 #define btck_ScriptVerificationFlags_WITNESS ((btck_ScriptVerificationFlags)(1U << 11))             //!< enable WITNESS (BIP141)
 #define btck_ScriptVerificationFlags_TAPROOT ((btck_ScriptVerificationFlags)(1U << 17))             //!< enable TAPROOT (BIPs 341 & 342)
+#define btck_ScriptVerificationFlags_P2MR ((btck_ScriptVerificationFlags)(1U << 21))                //!< enable P2MR (BIP 360) with SLH-DSA signature checks. Without it any witness spends a P2MR output.
 #define btck_ScriptVerificationFlags_ALL ((btck_ScriptVerificationFlags)(btck_ScriptVerificationFlags_P2SH |                \
                                                                          btck_ScriptVerificationFlags_DERSIG |              \
                                                                          btck_ScriptVerificationFlags_NULLDUMMY |           \
                                                                          btck_ScriptVerificationFlags_CHECKLOCKTIMEVERIFY | \
                                                                          btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY | \
                                                                          btck_ScriptVerificationFlags_WITNESS |             \
-                                                                         btck_ScriptVerificationFlags_TAPROOT))
+                                                                         btck_ScriptVerificationFlags_TAPROOT |             \
+                                                                         btck_ScriptVerificationFlags_P2MR))
 
 typedef uint8_t btck_ChainType;
 #define btck_ChainType_MAINNET ((btck_ChainType)(0))

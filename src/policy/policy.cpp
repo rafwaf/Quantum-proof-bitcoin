@@ -211,7 +211,7 @@ static bool CheckSigopsBIP54(const CTransaction& tx, const CCoinsViewCache& inpu
  *
  * We also check the total number of non-witness sigops across the whole transaction, as per BIP54.
  */
-TxValidationState ValidateInputsStandardness(const CTransaction& tx, const CCoinsViewCache& mapInputs)
+TxValidationState ValidateInputsStandardness(const CTransaction& tx, const CCoinsViewCache& mapInputs, bool p2mr_active)
 {
     TxValidationState state;
     if (tx.IsCoinBase()) {
@@ -231,11 +231,15 @@ TxValidationState ValidateInputsStandardness(const CTransaction& tx, const CCoin
         if (whichType == TxoutType::NONSTANDARD) {
             state.Invalid(TxValidationResult::TX_INPUTS_NOT_STANDARD, "bad-txns-nonstandard-inputs", strprintf("input %u script unknown", i));
             return state;
-        } else if (whichType == TxoutType::WITNESS_UNKNOWN) {
+        } else if (whichType == TxoutType::WITNESS_UNKNOWN || (whichType == TxoutType::WITNESS_V2_P2MR && !p2mr_active)) {
             // WITNESS_UNKNOWN failures are typically also caught with a policy
             // flag in the script interpreter, but it can be helpful to catch
             // this type of NONSTANDARD transaction earlier in transaction
             // validation.
+            //
+            // A P2MR output is an undefined witness program until the P2MR
+            // rules are active. No script verification flag makes spending it
+            // non-standard before that: this is the only check.
             state.Invalid(TxValidationResult::TX_INPUTS_NOT_STANDARD, "bad-txns-nonstandard-inputs", strprintf("input %u witness program is undefined", i));
             return state;
         } else if (whichType == TxoutType::SCRIPTHASH) {

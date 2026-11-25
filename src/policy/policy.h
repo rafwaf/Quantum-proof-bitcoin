@@ -100,6 +100,14 @@ inline constexpr unsigned int MAX_DUST_OUTPUTS_PER_TX{1};
  *
  * Note that this does not affect consensus validity; see GetBlockScriptFlags()
  * for that.
+ *
+ * SCRIPT_VERIFY_P2MR is included, also while the P2MR rules are not active
+ * yet. Without the flag every spend of a P2MR output is valid, so code that
+ * checks transaction inputs on its own, such as signing and PSBT code, needs
+ * it. The mempool applies it from the start as well, like it did for Taproot,
+ * so that nothing it holds becomes invalid when the rules activate. Until then
+ * it refuses spends of P2MR outputs as non-standard (see
+ * ValidateInputsStandardness()).
  */
 inline constexpr script_verify_flags MANDATORY_SCRIPT_VERIFY_FLAGS{SCRIPT_VERIFY_P2SH |
                                                              SCRIPT_VERIFY_DERSIG |
@@ -107,7 +115,8 @@ inline constexpr script_verify_flags MANDATORY_SCRIPT_VERIFY_FLAGS{SCRIPT_VERIFY
                                                              SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
                                                              SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
                                                              SCRIPT_VERIFY_WITNESS |
-                                                             SCRIPT_VERIFY_TAPROOT};
+                                                             SCRIPT_VERIFY_TAPROOT |
+                                                             SCRIPT_VERIFY_P2MR};
 
 /**
  * Standard script verification flags that standard transactions will comply
@@ -159,10 +168,12 @@ bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_dat
 /**
  * Check for standard transaction types
  * @param[in] mapInputs       Map of previous transactions that have outputs we're spending
+ * @param[in] p2mr_active     Whether the P2MR rules are active. Until they are, a P2MR output is an
+ *                            undefined witness program, and spending it is not standard.
  * @returns valid TxValidationState if all inputs (scriptSigs) use only standard transaction forms else returns
  * invalid TxValidationState which states why the first invalid input is not standard
  */
-TxValidationState ValidateInputsStandardness(const CTransaction& tx, const CCoinsViewCache& mapInputs);
+TxValidationState ValidateInputsStandardness(const CTransaction& tx, const CCoinsViewCache& mapInputs, bool p2mr_active = true);
 /**
 * Check if the transaction is over standard P2WSH resources limit:
 * 3600bytes witnessScript size, 80bytes per witness stack element, 100 witness stack elements

@@ -329,6 +329,20 @@ public:
 };
 }
 
+/** Whether a stack element is larger than a script may copy or hash.
+ *
+ *  The only elements that can be this large are SLH-DSA signatures given on the
+ *  witness stack of a P2MR script. A script can pass such an element to a
+ *  signature opcode, move it within the stack, take its size, compare it or
+ *  drop it, each of which uses it up or takes constant time. The opcodes that
+ *  copy or hash an element refuse one of this size, so that the work a script
+ *  can demand for every byte of it stays what it is for other scripts.
+ */
+static bool IsOversized(const valtype& vch)
+{
+    return vch.size() > MAX_SCRIPT_ELEMENT_SIZE;
+}
+
 static bool EvalChecksigPreTapscript(const valtype& vchSig, const valtype& vchPubKey, CScript::const_iterator pbegincodehash, CScript::const_iterator pend, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* serror, bool& fSuccess)
 {
     assert(sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0);
@@ -704,6 +718,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                 {
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    // This also keeps oversized elements off the alt stack.
+                    if (IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     altstack.push_back(stacktop(-1));
                     popstack(stack);
                 }
@@ -733,6 +749,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 -- x1 x2 x1 x2)
                     if (stack.size() < 2)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-2)) || IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch1 = stacktop(-2);
                     valtype vch2 = stacktop(-1);
                     stack.push_back(vch1);
@@ -745,6 +762,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 x3 -- x1 x2 x3 x1 x2 x3)
                     if (stack.size() < 3)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-3)) || IsOversized(stacktop(-2)) || IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch1 = stacktop(-3);
                     valtype vch2 = stacktop(-2);
                     valtype vch3 = stacktop(-1);
@@ -759,6 +777,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2)
                     if (stack.size() < 4)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-4)) || IsOversized(stacktop(-3))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch1 = stacktop(-4);
                     valtype vch2 = stacktop(-3);
                     stack.push_back(vch1);
@@ -771,6 +790,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
                     if (stack.size() < 6)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    // The two elements are moved by copying them.
+                    if (IsOversized(stacktop(-6)) || IsOversized(stacktop(-5))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch1 = stacktop(-6);
                     valtype vch2 = stacktop(-5);
                     stack.erase(stack.end()-6, stack.end()-4);
@@ -794,6 +815,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x - 0 | x x)
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch = stacktop(-1);
                     if (CastToBool(vch))
                         stack.push_back(vch);
@@ -822,6 +844,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x -- x x)
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch = stacktop(-1);
                     stack.push_back(vch);
                 }
@@ -841,6 +864,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 -- x1 x2 x1)
                     if (stack.size() < 2)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-2))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch = stacktop(-2);
                     stack.push_back(vch);
                 }
@@ -857,6 +881,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     popstack(stack);
                     if (n < 0 || n >= (int)stack.size())
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    // OP_ROLL moves the element by copying it.
+                    if (IsOversized(stacktop(-n-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch = stacktop(-n-1);
                     if (opcode == OP_ROLL)
                         stack.erase(stack.end()-n-1);
@@ -890,6 +916,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     // (x1 x2 -- x2 x1 x2)
                     if (stack.size() < 2)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    if (IsOversized(stacktop(-1))) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vch = stacktop(-1);
                     stack.insert(stack.end()-2, vch);
                 }
@@ -1055,11 +1082,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     valtype& vch = stacktop(-1);
-                    // The only elements that can be larger than this are SLH-DSA
-                    // signatures on a P2MR witness stack. Hashing one serves no
-                    // purpose, and is refused so that the amount of data a script
-                    // can have hashed stays as limited as it is for other scripts.
-                    if (vch.size() > MAX_SCRIPT_ELEMENT_SIZE) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+                    if (IsOversized(vch)) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
                     if (opcode == OP_RIPEMD160)
                         CRIPEMD160().Write(vch.data(), vch.size()).Finalize(vchHash.data());
@@ -2079,10 +2102,15 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             }
             return set_success(serror);
         }
-    } else if (witversion == 2 && program.size() == WITNESS_V2_P2MR_SIZE && !is_p2sh && (flags & SCRIPT_VERIFY_P2MR)) {
+    } else if (witversion == 2 && program.size() == WITNESS_V2_P2MR_SIZE && !is_p2sh) {
         // BIP360 P2MR: 32-byte non-P2SH witness v2 program, which is the Merkle
         // root of a script tree. Spending follows the script path rules of
         // BIP341, without an internal key and so without a key path.
+        //
+        // As for Taproot, without the flag every spend is valid, also under
+        // SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM. That keeps
+        // SCRIPT_VERIFY_P2MR a flag that can only make scripts invalid.
+        if (!(flags & SCRIPT_VERIFY_P2MR)) return set_success(serror);
         if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
         // A spend needs at least a script and a control block.
         if (stack.size() < 2) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);

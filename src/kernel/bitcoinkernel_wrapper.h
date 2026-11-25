@@ -111,6 +111,7 @@ enum class ScriptVerificationFlags : btck_ScriptVerificationFlags {
     CHECKSEQUENCEVERIFY = btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY,
     WITNESS = btck_ScriptVerificationFlags_WITNESS,
     TAPROOT = btck_ScriptVerificationFlags_TAPROOT,
+    P2MR = btck_ScriptVerificationFlags_P2MR,
     ALL = btck_ScriptVerificationFlags_ALL
 };
 

@@ -4,6 +4,7 @@
 
 #include <crypto/slhdsa.h>
 
+#include <crypto/sha256.h>
 #include <test/data/slhdsa_sha2_128s.json.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
@@ -182,6 +183,48 @@ BOOST_AUTO_TEST_CASE(sign_verify)
 
     // The internal and external interfaces sign different messages.
     BOOST_CHECK(!slhdsa::VerifyInternal(msg, sig, pk));
+}
+
+BOOST_AUTO_TEST_CASE(edge_cases)
+{
+    // The NIST vectors hold no empty message, and none with an empty message
+    // or a short one under a context of the maximum length. Compare these
+    // against signatures made by the independent Python implementation in
+    // test/functional/test_framework/crypto/slhdsa.py, by their SHA-256.
+    // The key is the one of the first NIST key generation vector.
+    const Bytes sk{ParseHex("173d04c938c1c36bf289c3c022d04b1463ae23c41aa546da589774ac20b745c40d794777914c99766827f0f09ca972be0162c10219d422adba1359e6aa65299c")};
+    const Bytes pk{sk.begin() + 2 * slhdsa::N, sk.end()};
+    Bytes max_context(slhdsa::MAX_CONTEXT_SIZE);
+    for (size_t i = 0; i < max_context.size(); ++i) max_context[i] = static_cast<unsigned char>(i);
+    Bytes short_msg(32);
+    for (size_t i = 0; i < short_msg.size(); ++i) short_msg[i] = static_cast<unsigned char>(i);
+
+    struct Case {
+        Bytes msg;
+        Bytes context;
+        std::string signature_sha256;
+    };
+    const std::vector<Case> cases{
+        {{}, {}, "6c649a8c4dfc8f573ba4599c8677fdff89d253a486368c55befbecedb2c4a6d6"},
+        {{}, max_context, "5861f66cc8847c9c68201b2eca6646070a626a848654f2ee5214ffda926a0c9f"},
+        {short_msg, max_context, "4c349cb51c6c1c001ba79b60dd9caa9ccdfd3080691862dc65bfe79042e3a9cd"},
+    };
+    for (const Case& test : cases) {
+        Signature sig;
+        BOOST_REQUIRE(slhdsa::Sign(test.msg, test.context, Fixed<slhdsa::SECRET_KEY_SIZE>(sk), {}, sig));
+        unsigned char hash[CSHA256::OUTPUT_SIZE];
+        CSHA256().Write(sig.data(), sig.size()).Finalize(hash);
+        BOOST_CHECK_EQUAL(HexStr(hash), test.signature_sha256);
+        BOOST_CHECK(slhdsa::Verify(test.msg, sig, test.context, Fixed<slhdsa::PUBLIC_KEY_SIZE>(pk)));
+        // The context is part of what is signed.
+        Bytes other_context{test.context};
+        if (other_context.empty()) {
+            other_context.push_back(0);
+        } else {
+            other_context.pop_back();
+        }
+        BOOST_CHECK(!slhdsa::Verify(test.msg, sig, other_context, Fixed<slhdsa::PUBLIC_KEY_SIZE>(pk)));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

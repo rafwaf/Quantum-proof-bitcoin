@@ -891,7 +891,12 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     if (m_pool.m_opts.require_standard) {
-        state = ValidateInputsStandardness(tx, m_view);
+        // Spending a P2MR output is not standard until the P2MR rules are
+        // active for the next block. The script checks below apply those rules
+        // whether they are active or not, so that no transaction in the
+        // mempool becomes invalid when they activate.
+        const bool p2mr_active{DeploymentActiveAfter(m_active_chainstate.m_chain.Tip(), m_active_chainstate.m_chainman, Consensus::DEPLOYMENT_P2MR)};
+        state = ValidateInputsStandardness(tx, m_view, p2mr_active);
         if (state.IsInvalid()) {
             return false;
         }
@@ -1133,13 +1138,7 @@ bool MemPoolAccept::PolicyScriptChecks(Workspace& ws)
     const CTransaction& tx = *ws.m_ptx;
     TxValidationState& state = ws.m_state;
 
-    script_verify_flags scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
-    // P2MR is the one rule that standard transactions follow only once it is
-    // active. Until then, spends of witness v2 outputs stay non-standard as
-    // spends of an unknown witness program.
-    if (DeploymentActiveAfter(m_active_chainstate.m_chain.Tip(), m_active_chainstate.m_chainman, Consensus::DEPLOYMENT_P2MR)) {
-        scriptVerifyFlags |= SCRIPT_VERIFY_P2MR;
-    }
+    constexpr script_verify_flags scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
     // Check input scripts and signatures.
     // This is done last to help prevent CPU exhaustion denial-of-service attacks.

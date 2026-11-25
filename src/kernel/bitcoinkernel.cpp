@@ -70,6 +70,10 @@ static const kernel::Context btck_context_static{};
 
 namespace {
 
+// The flags of the interface are passed to the script interpreter as they are.
+static_assert(script_verify_flags::from_int(btck_ScriptVerificationFlags_TAPROOT) == script_verify_flags{SCRIPT_VERIFY_TAPROOT});
+static_assert(script_verify_flags::from_int(btck_ScriptVerificationFlags_P2MR) == script_verify_flags{SCRIPT_VERIFY_P2MR});
+
 bool is_valid_flag_combination(script_verify_flags flags)
 {
     if (flags & SCRIPT_VERIFY_CLEANSTACK && ~flags & (SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS)) return false;
@@ -680,7 +684,7 @@ int btck_script_pubkey_verify(const btck_ScriptPubkey* script_pubkey,
 
     const PrecomputedTransactionData& txdata{precomputed_txdata ? btck_PrecomputedTransactionData::get(precomputed_txdata) : PrecomputedTransactionData(tx)};
 
-    if (flags & btck_ScriptVerificationFlags_TAPROOT && txdata.m_spent_outputs.empty()) {
+    if (flags & (btck_ScriptVerificationFlags_TAPROOT | btck_ScriptVerificationFlags_P2MR) && txdata.m_spent_outputs.empty()) {
         if (status) *status = btck_ScriptVerifyStatus_ERROR_SPENT_OUTPUTS_REQUIRED;
         return 0;
     }

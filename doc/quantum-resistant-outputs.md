@@ -84,14 +84,21 @@ such a key is still a key of unknown type, as it is in Bitcoin.
 
 - An element of the initial stack may be larger than 520 bytes only if it is
   exactly 7856 or 7857 bytes long.
-- `OP_RIPEMD160`, `OP_SHA1`, `OP_SHA256`, `OP_HASH160` and `OP_HASH256` fail on
-  an element larger than 520 bytes.
+- The opcodes that hash an element fail on an element larger than 520 bytes:
+  `OP_RIPEMD160`, `OP_SHA1`, `OP_SHA256`, `OP_HASH160` and `OP_HASH256`.
+- The opcodes that copy an element fail when that element is larger than 520
+  bytes: `OP_TOALTSTACK`, `OP_2DUP`, `OP_3DUP`, `OP_2OVER`, `OP_2ROT`,
+  `OP_IFDUP`, `OP_DUP`, `OP_OVER`, `OP_PICK`, `OP_ROLL` and `OP_TUCK`. For
+  `OP_2OVER`, `OP_2ROT`, `OP_OVER`, `OP_PICK`, `OP_ROLL` and `OP_TUCK` only the
+  elements that are copied or moved to the top count, not the others they step
+  over.
 
-These limits keep the work a script can demand per byte within what Bitcoin
-scripts can already demand. Other opcodes can still copy or compare an element
-of signature size, which costs less per byte of script than hashing 520-byte
-elements does (see the `P2MR*` benchmarks in `src/bench/p2mr.cpp`). Signature
-checks are bounded by the validation weight budget.
+A script can still pass an element of signature size to a signature opcode,
+move it with `OP_SWAP`, `OP_ROT` or `OP_2SWAP`, take its size, compare it, or
+drop it. Each of these either uses the element up or takes constant time, so a
+script cannot make a validator do more work on such elements than reading the
+witness once. In particular a signature cannot be copied to have it checked
+more than once.
 
 ## Relay policy
 
@@ -100,7 +107,9 @@ as a Taproot script path spend: no annex, a known leaf version, no `OP_SUCCESS`
 opcode, no public key of unknown type, and initial stack elements of at most 80
 bytes. Elements of 7856 or 7857 bytes are also allowed.
 
-Before activation, spending a witness version 2 output is non-standard.
+Before activation, spending a P2MR output is non-standard. A node that accepts
+non-standard transactions still applies the rules above to such a spend before
+activation, so that nothing in its mempool becomes invalid when they activate.
 
 ## Activation
 
