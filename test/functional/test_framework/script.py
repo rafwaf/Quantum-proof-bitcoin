@@ -36,6 +36,11 @@ SEQUENCE_LOCKTIME_MASK = 0x0000ffff
 
 LEAF_VERSION_TAPSCRIPT = 0xc0
 
+# Size of an SLH-DSA-SHA2-128s signature, and the type byte that precedes an
+# SLH-DSA public key in a P2MR leaf script.
+SLHDSA_SIGNATURE_SIZE = 7856
+SLHDSA_PUBKEY_TYPE = 0x80
+
 def hash160(s):
     return ripemd160(sha256(s))
 
@@ -758,6 +763,38 @@ def SegwitV0SignatureHash(*args, **kwargs):
     return hash256(SegwitV0SignatureMsg(*args, **kwargs))
 
 class TestFrameworkScript(unittest.TestCase):
+    def test_p2mr_construct(self):
+        # Test vectors from BIP 360 (bip-0360/ref-impl/common/tests/data/p2mr_construction.json).
+        from .segwit_addr import encode_segwit_address
+
+        def check(scripts, script_pubkey, address, control_blocks):
+            info = p2mr_construct(scripts)
+            self.assertEqual(info.scriptPubKey.hex(), script_pubkey)
+            self.assertEqual(encode_segwit_address("bc", 2, info.merkle_root), address)
+            self.assertEqual([info.leaves[i].control_block.hex() for i in range(len(control_blocks))], control_blocks)
+
+        # p2mr_single_leaf_script_tree
+        check([(0, bytes.fromhex("20b617298552a72ade070667e86ca63b8f5789a9fe8731ef91202a91c9f3459007ac"))],
+              "5220c525714a7f49c28aedbbba78c005931a81c234b2f6c99a73e4d06082adc8bf2b",
+              "bc1zc5jhzjnlf8pg4mdmhfuvqpvnr2quyd9j7mye5uly6psg9twghu4ssr0v9k",
+              ["c1"])
+        # p2mr_simple_lightning_contract
+        check([(0, bytes.fromhex("029000b275209997a497d964fc1a62885b05a51166a65a90df00492c8d7cf61d6accf54803beac")),
+               (1, bytes.fromhex("a8206c60f404f8167a38fc70eaf8aa17ac351023bef86bcb9d1086a19afe95bd533388204edfcf9dfe6c0b5c83d1ab3f78d1b39a46ebac6798e08e19761f5ed89ec83c10ac"))],
+              "522041646f8c1fe2a96ddad7f5471bc4fee7da98794ef8c45a4f4fc6a559d60c9f6b",
+              "bc1zg9jxlrqlu25kmkkh74r3h387uldfs72wlrz95n60c6j4n4svna4s4lhfhe",
+              ["c1632c8632b4f29c6291416e23135cf78ecb82e525788ea5ed6483e3c6ce943b42",
+               "c1c81451874bd9ebd4b6fd4bba1f84cdfb533c532365d22a0a702205ff658b17c9"])
+        # p2mr_three_leaf_complex
+        check([(0, bytes.fromhex("2072ea6adcf1d371dea8fba1035a09f3d24ed5a059799bae114084130ee5898e69ac")),
+               [(1, bytes.fromhex("202352d137f2f3ab38d1eaa976758873377fa5ebb817372c71e2c542313d4abda8ac")),
+                (2, bytes.fromhex("207337c0dd4253cb86f2c43a2351aadd82cccb12a172cd120452b9bb8324f2186aac"))]],
+              "5220ccbd66c6f7e8fdab47b3a486f59d28262be857f30d4773f2d5ea47f7761ce0e2",
+              "bc1zej7kd3hhar76k3an5jr0t8fgyc47s4lnp4rh8uk4afrlwasuur3qzgewqq",
+              ["c1ffe578e9ea769027e4f5a3de40732f75a88a6353a09d767ddeb66accef85e553",
+               "c19e31407bffa15fefbf5090b149d53959ecdf3f62b1246780238c24501d5ceaf62645a02e0aac1fe69d69755733a9b7621b694bb5b5cde2bbfc94066ed62b9817",
+               "c1ba982a91d4fc552163cb1c0da03676102d5b7a014304c01f0c77b2b8e888de1c2645a02e0aac1fe69d69755733a9b7621b694bb5b5cde2bbfc94066ed62b9817"])
+
     def test_bn2vch(self):
         self.assertEqual(bn2vch(0), bytes([]))
         self.assertEqual(bn2vch(1), bytes([0x01]))
@@ -939,6 +976,39 @@ def taproot_construct(pubkey, scripts=None, treat_internal_as_infinity=False):
         tweaked, negated = tweak_add_pubkey(pubkey, tweak)
     leaves = dict((name, TaprootLeafInfo(script, version, merklebranch, leaf)) for name, version, script, merklebranch, leaf in ret)
     return TaprootInfo(CScript([OP_1, tweaked]), pubkey, negated + 0, tweak, leaves, h, tweaked)
+
+# A P2MRInfo object has the following fields:
+# - scriptPubKey: the scriptPubKey (witness v2 CScript)
+# - leaves: a dict of name -> P2MRLeafInfo objects for all known leaves
+# - merkle_root: the script tree's Merkle root, which is the witness program
+P2MRInfo = namedtuple("P2MRInfo", "scriptPubKey,leaves,merkle_root")
+
+# A P2MRLeafInfo object has the following fields:
+# - script: the leaf script (CScript or bytes)
+# - version: the leaf version (0xc0 for tapscript)
+# - merklebranch: the merkle branch to use for this leaf (32*N bytes)
+# - leaf_hash: the tapleaf hash
+# - control_block: the control block to spend this leaf with
+P2MRLeafInfo = namedtuple("P2MRLeafInfo", "script,version,merklebranch,leaf_hash,control_block")
+
+def p2mr_construct(scripts):
+    """Construct a Pay-to-Merkle-Root output (BIP 360) from a tree of scripts.
+
+    scripts: a list of items with the same structure as in taproot_construct.
+             It must hold at least one leaf.
+
+    Returns: a P2MRInfo object
+    """
+    ret, h = taproot_tree_helper(scripts)
+    assert_equal(len(h), 32)
+    # The lowest bit of the control byte is the output key parity in Taproot. P2MR requires it to be set.
+    leaves = dict((name, P2MRLeafInfo(script, version, merklebranch, leaf, bytes([version | 1]) + merklebranch)) for name, version, script, merklebranch, leaf in ret)
+    return P2MRInfo(CScript([OP_2, h]), leaves, h)
+
+def slhdsa_script_pubkey(pubkey):
+    """The form an SLH-DSA public key takes in a P2MR leaf script."""
+    assert_equal(len(pubkey), 32)
+    return bytes([SLHDSA_PUBKEY_TYPE]) + pubkey
 
 def is_op_success(o):
     return o == 0x50 or o == 0x62 or o == 0x89 or o == 0x8a or o == 0x8d or o == 0x8e or (o >= 0x7e and o <= 0x81) or (o >= 0x83 and o <= 0x86) or (o >= 0x95 and o <= 0x99) or (o >= 0xbb and o <= 0xfe)

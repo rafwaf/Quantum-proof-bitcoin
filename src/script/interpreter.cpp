@@ -8,6 +8,7 @@
 #include <crypto/ripemd160.h>
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
+#include <crypto/slhdsa.h>
 #include <prevector.h>
 #include <pubkey.h>
 #include <script/script.h>
@@ -379,6 +380,21 @@ static bool EvalChecksigTapscript(const valtype& sig, const valtype& pubkey, Scr
     } else if (pubkey.size() == 32) {
         if (success && !checker.CheckSchnorrSignature(sig, pubkey, sigversion, execdata, serror)) {
             return false; // serror is set
+        }
+    } else if (execdata.m_p2mr && pubkey.size() == SLHDSA_PUBKEY_SIZE && pubkey[0] == SLHDSA_PUBKEY_TYPE) {
+        // An SLH-DSA public key, which only P2MR leaf scripts support. Like
+        // BIP 340 keys, an empty signature makes the check fail without
+        // failing the script, and any other invalid signature fails the script.
+        if (success) {
+            // The weight of a BIP 340 signature check was deducted above.
+            // An SLH-DSA check costs more: deduct the difference.
+            execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PER_SLHDSA_SIGOP_PASSED - VALIDATION_WEIGHT_PER_SIGOP_PASSED;
+            if (execdata.m_validation_weight_left < 0) {
+                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
+            }
+            if (!checker.CheckSLHDSASignature(sig, std::span{pubkey}.subspan(1), sigversion, execdata, serror)) {
+                return false; // serror is set
+            }
         }
     } else {
         /*
@@ -1039,6 +1055,11 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     valtype& vch = stacktop(-1);
+                    // The only elements that can be larger than this are SLH-DSA
+                    // signatures on a P2MR witness stack. Hashing one serves no
+                    // purpose, and is refused so that the amount of data a script
+                    // can have hashed stays as limited as it is for other scripts.
+                    if (vch.size() > MAX_SCRIPT_ELEMENT_SIZE) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
                     if (opcode == OP_RIPEMD160)
                         CRIPEMD160().Write(vch.data(), vch.size()).Finalize(vchHash.data());
@@ -1426,14 +1447,15 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
     for (size_t inpos = 0; inpos < txTo.vin.size() && !(uses_bip143_segwit && uses_bip341_taproot); ++inpos) {
         if (!txTo.vin[inpos].scriptWitness.IsNull()) {
             if (m_spent_outputs_ready && m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE &&
-                m_spent_outputs[inpos].scriptPubKey[0] == OP_1) {
+                (m_spent_outputs[inpos].scriptPubKey[0] == OP_1 || m_spent_outputs[inpos].scriptPubKey[0] == OP_2)) {
                 // Treat every witness-bearing spend with 34-byte scriptPubKey that starts with OP_1 as a Taproot
-                // spend. This only works if spent_outputs was provided as well, but if it wasn't, actual validation
+                // spend, and one that starts with OP_2 as a P2MR spend, which uses the same signature hashes.
+                // This only works if spent_outputs was provided as well, but if it wasn't, actual validation
                 // will fail anyway. Note that this branch may trigger for scriptPubKeys that aren't actually segwit
                 // but in that case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED anyway.
                 uses_bip341_taproot = true;
             } else {
-                // Treat every spend that's not known to native witness v1 as a Witness v0 spend. This branch may
+                // Treat every spend that's not known to native witness v1 or v2 as a Witness v0 spend. This branch may
                 // also be taken for unknown witness versions, but it is harmless, and being precise would require
                 // P2SH evaluation to find the redeemScript.
                 uses_bip143_segwit = true;
@@ -1751,6 +1773,45 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<cons
     return true;
 }
 
+static_assert(SLHDSA_SIGNATURE_SIZE == slhdsa::SIGNATURE_SIZE);
+static_assert(SLHDSA_PUBKEY_SIZE == 1 + slhdsa::PUBLIC_KEY_SIZE);
+
+template <class T>
+bool GenericTransactionSignatureChecker<T>::VerifySLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, const uint256& sighash) const
+{
+    // The signature is over the 32-byte signature hash, with an empty context string.
+    return slhdsa::Verify(std::span<const unsigned char>{sighash.data(), sighash.size()}, sig, {}, std::span<const unsigned char, slhdsa::PUBLIC_KEY_SIZE>{pubkey});
+}
+
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckSLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const
+{
+    // SLH-DSA signatures only occur in the leaf scripts of P2MR outputs, which are tapscripts.
+    assert(sigversion == SigVersion::TAPSCRIPT);
+    // The caller is responsible for passing a public key of the right size.
+    assert(pubkey.size() == slhdsa::PUBLIC_KEY_SIZE);
+    // The signature format mirrors that of BIP 340 signatures in BIP 341: the
+    // signature itself, optionally followed by a sighash type byte that is not
+    // SIGHASH_DEFAULT. Empty signatures are handled in EvalChecksigTapscript,
+    // which does not call this function for them.
+    if (sig.size() != SLHDSA_SIGNATURE_SIZE && sig.size() != SLHDSA_SIGNATURE_SIZE + 1) return set_error(serror, SCRIPT_ERR_SLHDSA_SIG_SIZE);
+
+    uint8_t hashtype = SIGHASH_DEFAULT;
+    if (sig.size() == SLHDSA_SIGNATURE_SIZE + 1) {
+        hashtype = SpanPopBack(sig);
+        if (hashtype == SIGHASH_DEFAULT) return set_error(serror, SCRIPT_ERR_SLHDSA_SIG_HASHTYPE);
+    }
+    // The message signed is the BIP 342 signature hash, the same one a BIP 340
+    // signature in the same script would sign.
+    uint256 sighash;
+    if (!this->txdata) return HandleMissingData(m_mdb);
+    if (!SignatureHashSchnorr(sighash, execdata, *txTo, nIn, hashtype, sigversion, *this->txdata, m_mdb)) {
+        return set_error(serror, SCRIPT_ERR_SLHDSA_SIG_HASHTYPE);
+    }
+    if (!VerifySLHDSASignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SLHDSA_SIG);
+    return true;
+}
+
 template <class T>
 bool GenericTransactionSignatureChecker<T>::CheckLockTime(const CScriptNum& nLockTime) const
 {
@@ -1867,7 +1928,13 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
 
     // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
     for (const valtype& elem : stack) {
-        if (elem.size() > MAX_SCRIPT_ELEMENT_SIZE) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+        if (elem.size() > MAX_SCRIPT_ELEMENT_SIZE) {
+            // The one exception is an element with exactly the size of an
+            // SLH-DSA signature, with or without a sighash type byte, on the
+            // witness stack of a P2MR script.
+            const bool slhdsa_sig_size{elem.size() == SLHDSA_SIGNATURE_SIZE || elem.size() == SLHDSA_SIGNATURE_SIZE + 1};
+            if (!(execdata.m_p2mr && slhdsa_sig_size)) return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+        }
     }
 
     // Run the script interpreter.
@@ -1905,6 +1972,21 @@ uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const u
     uint256 k = tapleaf_hash;
     for (int i = 0; i < path_len; ++i) {
         std::span node{std::span{control}.subspan(TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * i, TAPROOT_CONTROL_NODE_SIZE)};
+        k = ComputeTapbranchHash(k, node);
+    }
+    return k;
+}
+
+uint256 ComputeP2MRMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash)
+{
+    assert(control.size() >= P2MR_CONTROL_BASE_SIZE);
+    assert(control.size() <= P2MR_CONTROL_MAX_SIZE);
+    assert((control.size() - P2MR_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE == 0);
+
+    const int path_len = (control.size() - P2MR_CONTROL_BASE_SIZE) / TAPROOT_CONTROL_NODE_SIZE;
+    uint256 k = tapleaf_hash;
+    for (int i = 0; i < path_len; ++i) {
+        std::span node{control.subspan(P2MR_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * i, TAPROOT_CONTROL_NODE_SIZE)};
         k = ComputeTapbranchHash(k, node);
     }
     return k;
@@ -1997,6 +2079,55 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             }
             return set_success(serror);
         }
+    } else if (witversion == 2 && program.size() == WITNESS_V2_P2MR_SIZE && !is_p2sh && (flags & SCRIPT_VERIFY_P2MR)) {
+        // BIP360 P2MR: 32-byte non-P2SH witness v2 program, which is the Merkle
+        // root of a script tree. Spending follows the script path rules of
+        // BIP341, without an internal key and so without a key path.
+        if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        // A spend needs at least a script and a control block.
+        if (stack.size() < 2) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        if (!stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+            // An annex must leave a script and a control block below it.
+            if (stack.size() < 3) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+            // Drop annex (this is non-standard; see IsWitnessStandard)
+            const valtype& annex = SpanPopBack(stack);
+            execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            execdata.m_annex_present = true;
+        } else {
+            execdata.m_annex_present = false;
+        }
+        execdata.m_annex_init = true;
+
+        const valtype& control = SpanPopBack(stack);
+        const valtype& script = SpanPopBack(stack);
+        if (control.size() < P2MR_CONTROL_BASE_SIZE || control.size() > P2MR_CONTROL_MAX_SIZE || ((control.size() - P2MR_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE) != 0) {
+            return set_error(serror, SCRIPT_ERR_P2MR_WRONG_CONTROL_SIZE);
+        }
+        // In Taproot the lowest bit of the control byte is the parity of the
+        // output key. P2MR has no output key, and requires the bit to be set.
+        if ((control[0] & 1) == 0) return set_error(serror, SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE);
+        execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] & TAPROOT_LEAF_MASK, script);
+        const uint256 merkle_root{ComputeP2MRMerkleRoot(control, execdata.m_tapleaf_hash)};
+        if (memcmp(merkle_root.begin(), program.data(), WITNESS_V2_P2MR_SIZE)) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+        execdata.m_tapleaf_hash_init = true;
+        execdata.m_p2mr = true;
+        // Note: BIP360 version 0.12 makes a tree that consists of a single leaf
+        // (an empty Merkle path) spendable by anyone, to reserve it for future
+        // use. That is not done here: a single leaf is executed like any other,
+        // so that such an output cannot be taken by whoever sees its script.
+        if ((control[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
+            // Tapscript (leaf version 0xc0), extended with SLH-DSA public keys
+            exec_script = CScript(script.begin(), script.end());
+            execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
+            execdata.m_validation_weight_left_init = true;
+            return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+        }
+        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
+            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION);
+        }
+        return set_success(serror);
     } else if (!is_p2sh && CScript::IsPayToAnchor(witversion, program)) {
         return true;
     } else {
@@ -2200,6 +2331,7 @@ const std::map<std::string, script_verify_flag_name>& ScriptFlagNamesToEnum()
         FLAG_NAME(DISCOURAGE_UPGRADABLE_PUBKEYTYPE),
         FLAG_NAME(DISCOURAGE_OP_SUCCESS),
         FLAG_NAME(DISCOURAGE_UPGRADABLE_TAPROOT_VERSION),
+        FLAG_NAME(P2MR),
     };
 #undef FLAG_NAME
     return g_names_to_enum;

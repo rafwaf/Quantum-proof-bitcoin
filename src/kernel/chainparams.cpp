@@ -80,6 +80,9 @@ void CChainParams::ApplyDeploymentOptions(const DeploymentOptions& opts)
         case Consensus::BuriedDeployment::DEPLOYMENT_SEGWIT:
             consensus.SegwitHeight = int{height};
             break;
+        case Consensus::BuriedDeployment::DEPLOYMENT_P2MR:
+            consensus.P2MRHeight = int{height};
+            break;
         case Consensus::BuriedDeployment::DEPLOYMENT_HEIGHTINCB:
             consensus.BIP34Height = int{height};
             break;
@@ -599,6 +602,7 @@ public:
         consensus.BIP66Height = 1;  // Always active unless overridden
         consensus.CSVHeight = 1;    // Always active unless overridden
         consensus.SegwitHeight = 0; // Always active unless overridden
+        consensus.P2MRHeight = 0;   // Always active unless overridden
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 24 * 60 * 60; // one day

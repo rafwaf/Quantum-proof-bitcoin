@@ -656,6 +656,9 @@ static bool SignStep(const SigningProvider& provider, const BaseSignatureCreator
     case TxoutType::NULL_DATA:
     case TxoutType::WITNESS_UNKNOWN:
         return false;
+    case TxoutType::WITNESS_V2_P2MR:
+        // Signing for P2MR outputs is not implemented yet.
+        return false;
     case TxoutType::PUBKEY:
         if (!CreateSig(creator, sigdata, provider, sig, CPubKey(vSolutions[0]), scriptPubKey, sigversion)) return false;
         ret.push_back(std::move(sig));

@@ -146,6 +146,11 @@ enum class script_verify_flag_name : uint8_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE,
 
+    // Pay-to-Merkle-Root validation (BIP 360), with SLH-DSA public keys
+    // (FIPS 205) in the signature opcodes of its leaf scripts
+    //
+    SCRIPT_VERIFY_P2MR,
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
@@ -232,6 +237,10 @@ struct ScriptExecutionData
 
     //! The hash of the corresponding output
     std::optional<uint256> m_output_hash;
+
+    //! Whether the script is a leaf of a P2MR (witness v2) script tree. Such
+    //! scripts follow the BIP 342 rules, extended with SLH-DSA public keys.
+    bool m_p2mr = false;
 };
 
 /** Signature hash sizes */
@@ -245,6 +254,13 @@ inline constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
 inline constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 inline constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
 inline constexpr size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
+
+/** Size of a P2MR (BIP 360) witness program: the Merkle root of a script tree. */
+inline constexpr size_t WITNESS_V2_P2MR_SIZE = 32;
+/** A P2MR control block is the control byte followed by the Merkle path. Unlike
+ *  a Taproot control block it holds no internal key. */
+inline constexpr size_t P2MR_CONTROL_BASE_SIZE = 1;
+inline constexpr size_t P2MR_CONTROL_MAX_SIZE = P2MR_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
 extern const HashWriter HASHER_TAPSIGHASH; //!< Hasher with tag "TapSighash" pre-fed to it.
 extern const HashWriter HASHER_TAPLEAF;    //!< Hasher with tag "TapLeaf" pre-fed to it.
@@ -281,6 +297,13 @@ public:
     }
 
     virtual bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const
+    {
+        return false;
+    }
+
+    /** Check an SLH-DSA signature in a P2MR leaf script. pubkey is the 32-byte
+     *  SLH-DSA public key, without the type byte it has in the script. */
+    virtual bool CheckSLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const
     {
         return false;
     }
@@ -324,12 +347,14 @@ private:
 protected:
     virtual bool VerifyECDSASignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
     virtual bool VerifySchnorrSignature(std::span<const unsigned char> sig, const XOnlyPubKey& pubkey, const uint256& sighash) const;
+    virtual bool VerifySLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, const uint256& sighash) const;
 
 public:
     GenericTransactionSignatureChecker(const T* txToIn, unsigned int nInIn, const CAmount& amountIn, MissingDataBehavior mdb) : txTo(txToIn), m_mdb(mdb), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
     GenericTransactionSignatureChecker(const T* txToIn, unsigned int nInIn, const CAmount& amountIn, const PrecomputedTransactionData& txdataIn, MissingDataBehavior mdb) : txTo(txToIn), m_mdb(mdb), nIn(nInIn), amount(amountIn), txdata(&txdataIn) {}
     bool CheckECDSASignature(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const override;
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
+    bool CheckSLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
 };
@@ -355,6 +380,11 @@ public:
         return m_checker.CheckSchnorrSignature(sig, pubkey, sigversion, execdata, serror);
     }
 
+    bool CheckSLHDSASignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override
+    {
+        return m_checker.CheckSLHDSASignature(sig, pubkey, sigversion, execdata, serror);
+    }
+
     bool CheckLockTime(const CScriptNum& nLockTime) const override
     {
         return m_checker.CheckLockTime(nLockTime);
@@ -373,6 +403,9 @@ uint256 ComputeTapbranchHash(std::span<const unsigned char> a, std::span<const u
 /** Compute the BIP341 taproot script tree Merkle root from control block and leaf hash.
  *  Requires control block to have valid length (33 + k*32, with k in {0,1,..,128}). */
 uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash);
+/** Compute the BIP360 P2MR script tree Merkle root from control block and leaf hash.
+ *  Requires control block to have valid length (1 + k*32, with k in {0,1,..,128}). */
+uint256 ComputeP2MRMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash);
 
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* error = nullptr);
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = nullptr);

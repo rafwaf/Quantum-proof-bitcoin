@@ -91,6 +91,12 @@ bool ExtractDestination(const CScript& scriptPubKey, CTxDestination& addressRet)
         addressRet = PayToAnchor();
         return true;
     }
+    case TxoutType::WITNESS_V2_P2MR: {
+        // There is no dedicated destination type for P2MR yet. The generic
+        // witness program destination encodes to the same address.
+        addressRet = WitnessUnknown{2, vSolutions[0]};
+        return true;
+    }
     case TxoutType::WITNESS_UNKNOWN: {
         addressRet = WitnessUnknown{vSolutions[0][0], vSolutions[1]};
         return true;

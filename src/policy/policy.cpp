@@ -347,6 +347,31 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
                 return false;
             }
         }
+
+        // Check policy limits for P2MR spends. They mirror those for Taproot script path spends:
+        // - MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE limit for stack item size, except for
+        //   items with the size of an SLH-DSA signature
+        // - No annexes
+        if (witnessversion == 2 && witnessprogram.size() == WITNESS_V2_P2MR_SIZE && !p2sh) {
+            // P2MR spend (non-P2SH-wrapped, version 2, witness program size 32; see BIP 360)
+            std::span stack{tx.vin[i].scriptWitness.stack};
+            // A spend holds at least a script and a control block; fewer elements are invalid by consensus rules.
+            if (stack.size() < 2) return false;
+            if (!stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+                // Annexes are nonstandard as long as no semantics are defined for them.
+                return false;
+            }
+            const auto& control_block = SpanPopBack(stack);
+            SpanPopBack(stack); // Ignore script
+            if (control_block.empty()) return false; // Empty control block is invalid
+            if ((control_block[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
+                // Leaf version 0xc0: tapscript, extended with SLH-DSA public keys
+                for (const auto& item : stack) {
+                    const bool slhdsa_sig_size{item.size() == SLHDSA_SIGNATURE_SIZE || item.size() == SLHDSA_SIGNATURE_SIZE + 1};
+                    if (item.size() > MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE && !slhdsa_sig_size) return false;
+                }
+            }
+        }
     }
     return true;
 }

@@ -64,6 +64,22 @@ inline constexpr int64_t VALIDATION_WEIGHT_PER_SIGOP_PASSED{50};
 // How much weight budget is added to the witness size (Tapscript only, see BIP 342).
 inline constexpr int64_t VALIDATION_WEIGHT_OFFSET{50};
 
+// Size of an SLH-DSA-SHA2-128s signature (FIPS 205). As with BIP 340
+// signatures, a signature in a script may be followed by one sighash type byte.
+inline constexpr unsigned int SLHDSA_SIGNATURE_SIZE{7856};
+
+// An SLH-DSA public key in a P2MR leaf script is a type byte followed by the
+// 32-byte SLH-DSA-SHA2-128s public key. The type byte tells it apart from a
+// 32-byte BIP 340 public key and leaves room for other schemes.
+inline constexpr unsigned char SLHDSA_PUBKEY_TYPE{0x80};
+inline constexpr unsigned int SLHDSA_PUBKEY_SIZE{33};
+
+// Validation weight per passing SLH-DSA signature check (P2MR only). Verifying
+// an SLH-DSA signature costs several times as much as a BIP 340 signature, and
+// up to about 15 times as much on hardware without SHA-256 instructions. The
+// signature itself adds more than 7 times this amount to the budget.
+inline constexpr int64_t VALIDATION_WEIGHT_PER_SLHDSA_SIGOP_PASSED{1000};
+
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
 {

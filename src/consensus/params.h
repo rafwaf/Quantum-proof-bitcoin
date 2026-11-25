@@ -32,8 +32,12 @@ enum BuriedDeployment : int16_t {
     // SCRIPT_VERIFY_WITNESS is enforced from genesis, but the check for downloading
     // missing witness data is not. BIP 147 also relies on hardcoded activation height.
     DEPLOYMENT_SEGWIT,
+    // Pay-to-Merkle-Root outputs (BIP 360) with SLH-DSA signatures. Not part of
+    // Bitcoin: this is the first rule of the fork, and has no height on the
+    // Bitcoin networks.
+    DEPLOYMENT_P2MR,
 };
-constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_SEGWIT; }
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_P2MR; }
 
 enum DeploymentPos : uint16_t {
     DEPLOYMENT_TESTDUMMY,
@@ -108,6 +112,9 @@ struct Params {
      * Note that segwit v0 script rules are enforced on all blocks except the
      * BIP 16 exception blocks. */
     int SegwitHeight;
+    /** Block height at which P2MR outputs (BIP 360) and the SLH-DSA signature
+     * checks in their scripts become active. The default means never. */
+    int P2MRHeight{std::numeric_limits<int>::max()};
     /** Don't warn about unknown BIP 9 activations below this height.
      * This prevents us from warning about the CSV, segwit and taproot activations. */
     int MinBIP9WarningHeight;
@@ -153,6 +160,8 @@ struct Params {
             return CSVHeight;
         case DEPLOYMENT_SEGWIT:
             return SegwitHeight;
+        case DEPLOYMENT_P2MR:
+            return P2MRHeight;
         } // no default case, so the compiler can warn about missing cases
         return std::numeric_limits<int>::max();
     }

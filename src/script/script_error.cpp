@@ -117,6 +117,16 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:
             return "Signature is found in scriptCode";
+        case SCRIPT_ERR_P2MR_WRONG_CONTROL_SIZE:
+            return "Invalid P2MR control block size";
+        case SCRIPT_ERR_P2MR_WRONG_CONTROL_BYTE:
+            return "Lowest bit of the P2MR control byte must be set";
+        case SCRIPT_ERR_SLHDSA_SIG_SIZE:
+            return "Invalid SLH-DSA signature size";
+        case SCRIPT_ERR_SLHDSA_SIG_HASHTYPE:
+            return "Invalid SLH-DSA signature hash type";
+        case SCRIPT_ERR_SLHDSA_SIG:
+            return "Invalid SLH-DSA signature";
         case SCRIPT_ERR_SCRIPTNUM:
             return "Script number overflowed or is non-minimally encoded";
         case SCRIPT_ERR_UNKNOWN_ERROR:
