@@ -37,6 +37,26 @@ It does not mean any of the following:
 - **The code has not been audited.** Nothing here should be used to hold real
   value yet.
 
+## Status
+
+Working so far, on a private test network (regtest) only:
+
+- SLH-DSA-SHA2-128s signatures, checked against NIST's official test vectors.
+- A quantum-resistant output type: Pay-to-Merkle-Root outputs (BIP 360) whose
+  scripts accept SLH-DSA public keys. The rules are specified in
+  [doc/quantum-resistant-outputs.md](doc/quantum-resistant-outputs.md).
+
+Not done yet:
+
+- Wallet support for creating quantum-resistant addresses and signing for them.
+- The split from Bitcoin: the split height, protection against replaying
+  transactions between the two chains, difficulty adjustment after the split,
+  and the network's own name and identifiers.
+- Rules for coins that are never moved to a quantum-resistant output.
+
+Until the split is implemented, a node built from this code follows Bitcoin's
+rules on Bitcoin's networks.
+
 ## Based on Bitcoin Core
 
 The code is a fork of [Bitcoin Core](https://github.com/bitcoin/bitcoin)
