@@ -29,6 +29,7 @@ TEST_FRAMEWORK_MODULES = [
     "crypto.ripemd160",
     "crypto.secp256k1",
     "crypto.siphash",
+    "crypto.slhdsa",
     "script",
     "script_util",
     "segwit_addr",
