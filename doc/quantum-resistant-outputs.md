@@ -87,6 +87,12 @@ such a key is still a key of unknown type, as it is in Bitcoin.
 - `OP_RIPEMD160`, `OP_SHA1`, `OP_SHA256`, `OP_HASH160` and `OP_HASH256` fail on
   an element larger than 520 bytes.
 
+These limits keep the work a script can demand per byte within what Bitcoin
+scripts can already demand. Other opcodes can still copy or compare an element
+of signature size, which costs less per byte of script than hashing 520-byte
+elements does (see the `P2MR*` benchmarks in `src/bench/p2mr.cpp`). Signature
+checks are bounded by the validation weight budget.
+
 ## Relay policy
 
 A transaction that spends a P2MR output is standard under the same conditions
