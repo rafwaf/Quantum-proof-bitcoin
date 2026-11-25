@@ -2,8 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <chainparams.h>
+#include <common/args.h>
 #include <consensus/amount.h>
+#include <consensus/params.h>
 #include <crypto/slhdsa.h>
+#include <deploymentinfo.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
@@ -14,10 +18,12 @@
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
+#include <util/chaintype.h>
 
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -103,6 +109,23 @@ struct SlhDsaSpend {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(p2mr_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(activation_parameters)
+{
+    // P2MR has no activation height on the Bitcoin networks. A node follows
+    // Bitcoin's consensus rules there until the fork is given a height.
+    const ArgsManager args;
+    for (const ChainType chain : {ChainType::MAIN, ChainType::TESTNET, ChainType::TESTNET4, ChainType::SIGNET}) {
+        const auto params{CreateChainParams(args, chain)};
+        BOOST_CHECK_EQUAL(params->GetConsensus().P2MRHeight, std::numeric_limits<int>::max());
+        BOOST_CHECK_EQUAL(params->GetConsensus().DeploymentHeight(Consensus::DEPLOYMENT_P2MR), std::numeric_limits<int>::max());
+    }
+    // On regtest it is active from the first block, unless overridden.
+    BOOST_CHECK_EQUAL(CreateChainParams(args, ChainType::REGTEST)->GetConsensus().P2MRHeight, 0);
+
+    BOOST_CHECK_EQUAL(DeploymentName(Consensus::DEPLOYMENT_P2MR), "p2mr");
+    BOOST_CHECK(GetBuriedDeployment("p2mr") == Consensus::DEPLOYMENT_P2MR);
+}
 
 BOOST_AUTO_TEST_CASE(output_type)
 {
